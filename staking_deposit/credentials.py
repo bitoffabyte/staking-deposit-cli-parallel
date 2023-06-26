@@ -214,52 +214,49 @@ class CredentialList:
 
     @classmethod
     def from_mnemonic(cls,
-                    *,
-                    mnemonic: str,
-                    mnemonic_password: str,
-                    num_keys: int,
-                    amounts: List[int],
-                    chain_setting: BaseChainSetting,
-                    start_index: int,
-                    hex_eth1_withdrawal_address: Optional[HexAddress]) -> 'CredentialList':
+                      *,
+                      mnemonic: str,
+                      mnemonic_password: str,
+                      num_keys: int,
+                      amounts: List[int],
+                      chain_setting: BaseChainSetting,
+                      start_index: int,
+                      hex_eth1_withdrawal_address: Optional[HexAddress]) -> 'CredentialList':
         if len(amounts) != num_keys:
             raise ValueError(
                 f"The number of keys ({num_keys}) doesn't equal to the corresponding deposit amounts ({len(amounts)})."
             )
-
         key_indices = range(start_index, start_index + num_keys)
-        with multiprocessing.Pool(5) as pool:
-            return cls([pool.apply_async(
-                lambda index: Credential(mnemonic=mnemonic, mnemonic_password=mnemonic_password,
-                                    index=index, amount=amounts[index - start_index], chain_setting=chain_setting,
-                                    hex_eth1_withdrawal_address=hex_eth1_withdrawal_address)
-                , args=(index,)) for index in key_indices])
+        with click.progressbar(key_indices, label=load_text(['msg_key_creation']),
+                               show_percent=False, show_pos=True) as indices:
+            with multiprocessing.Pool(5) as pool:
+                return cls([pool.apply_async(Credential, args=(mnemonic, mnemonic_password, index, amount, chain_setting,
+                                                                 hex_eth1_withdrawal_address))
+                        for index, amount in zip(indices, amounts)])
 
     def export_keystores(self, password: str, folder: str) -> List[str]:
-        credentials = self.credentials
         with multiprocessing.Pool(5) as pool:
-            return [pool.apply_async(
-                lambda credential: credential.save_signing_keystore(password=password, folder=folder),
-                args=(credential,)) for credential in credentials]
+            return [pool.apply_async(credential.save_signing_keystore, args=(password, folder)).get()
+                    for credential in self.credentials]
 
     def export_deposit_data_json(self, folder: str) -> str:
-        credentials = self.credentials
         with multiprocessing.Pool(5) as pool:
-            deposit_data = pool.map(lambda credential: credential.deposit_datum_dict, credentials)
-            filefolder = os.path.join(folder, 'deposit_data-%i.json' % time.time())
-            with open(filefolder, 'w') as f:
-                json.dump(deposit_data, f, default=lambda x: x.hex())
-            if os.name == 'posix':
-                os.chmod(filefolder, int('440', 8))  # Read for owner & group
-            return filefolder
+            deposit_data = pool.map(lambda credential: credential.deposit_datum_dict, self.credentials)
+
+        filefolder = os.path.join(folder, 'deposit_data-%i.json' % time.time())
+        with open(filefolder, 'w') as f:
+            json.dump(deposit_data, f, default=lambda x: x.hex())
+        if os.name == 'posix':
+            os.chmod(filefolder, int('440', 8))  # Read for owner & group
+        return filefolder
 
     def verify_keystores(self, keystore_filefolders: List[str], password: str) -> bool:
-        credentials = self.credentials
-        keystore_filefolders = zip(credentials, keystore_filefolders)
         with multiprocessing.Pool(5) as pool:
-            return all(pool.apply_async(
-                lambda credential, filefolder: credential.verify_keystore(keystore_filefolder=filefolder, password=password),
-                args=(credential, filefolder)) for credential, filefolder in keystore_filefolders)
+            results = pool.map(lambda keystore_filefolder: credential.verify_keystore(keystore_filefolder=keystore_filefolder, password=password), keystore_filefolders)
+            for result in results:
+                if not result:
+                    return False
+        return True
 
     def export_bls_to_execution_change_json(self, folder: str, validator_indices: Sequence[int]) -> str:
         with multiprocessing.Pool(5) as pool:
@@ -273,4 +270,3 @@ class CredentialList:
         if os.name == 'posix':
             os.chmod(filefolder, int('440', 8))  # Read for owner & group
         return filefolder
-
