@@ -4,6 +4,7 @@ from enum import Enum
 import time
 import json
 from typing import Dict, List, Optional, Any, Sequence
+import multiprocessing
 
 from eth_typing import Address, HexAddress
 from eth_utils import to_canonical_address
@@ -213,54 +214,58 @@ class CredentialList:
 
     @classmethod
     def from_mnemonic(cls,
-                      *,
-                      mnemonic: str,
-                      mnemonic_password: str,
-                      num_keys: int,
-                      amounts: List[int],
-                      chain_setting: BaseChainSetting,
-                      start_index: int,
-                      hex_eth1_withdrawal_address: Optional[HexAddress]) -> 'CredentialList':
+                    *,
+                    mnemonic: str,
+                    mnemonic_password: str,
+                    num_keys: int,
+                    amounts: List[int],
+                    chain_setting: BaseChainSetting,
+                    start_index: int,
+                    hex_eth1_withdrawal_address: Optional[HexAddress]) -> 'CredentialList':
         if len(amounts) != num_keys:
             raise ValueError(
                 f"The number of keys ({num_keys}) doesn't equal to the corresponding deposit amounts ({len(amounts)})."
             )
+
         key_indices = range(start_index, start_index + num_keys)
-        with click.progressbar(key_indices, label=load_text(['msg_key_creation']),
-                               show_percent=False, show_pos=True) as indices:
-            return cls([Credential(mnemonic=mnemonic, mnemonic_password=mnemonic_password,
-                                   index=index, amount=amounts[index - start_index], chain_setting=chain_setting,
-                                   hex_eth1_withdrawal_address=hex_eth1_withdrawal_address)
-                        for index in indices])
+        with multiprocessing.Pool(5) as pool:
+            return cls([pool.apply_async(
+                lambda index: Credential(mnemonic=mnemonic, mnemonic_password=mnemonic_password,
+                                    index=index, amount=amounts[index - start_index], chain_setting=chain_setting,
+                                    hex_eth1_withdrawal_address=hex_eth1_withdrawal_address)
+                , args=(index,)) for index in key_indices])
 
     def export_keystores(self, password: str, folder: str) -> List[str]:
-        with click.progressbar(self.credentials, label=load_text(['msg_keystore_creation']),
-                               show_percent=False, show_pos=True) as credentials:
-            return [credential.save_signing_keystore(password=password, folder=folder) for credential in credentials]
+        credentials = self.credentials
+        with multiprocessing.Pool(5) as pool:
+            return [pool.apply_async(
+                lambda credential: credential.save_signing_keystore(password=password, folder=folder),
+                args=(credential,)) for credential in credentials]
 
     def export_deposit_data_json(self, folder: str) -> str:
-        with click.progressbar(self.credentials, label=load_text(['msg_depositdata_creation']),
-                               show_percent=False, show_pos=True) as credentials:
-            deposit_data = [cred.deposit_datum_dict for cred in credentials]
-        filefolder = os.path.join(folder, 'deposit_data-%i.json' % time.time())
-        with open(filefolder, 'w') as f:
-            json.dump(deposit_data, f, default=lambda x: x.hex())
-        if os.name == 'posix':
-            os.chmod(filefolder, int('440', 8))  # Read for owner & group
-        return filefolder
+        credentials = self.credentials
+        with multiprocessing.Pool(5) as pool:
+            deposit_data = pool.map(lambda credential: credential.deposit_datum_dict, credentials)
+            filefolder = os.path.join(folder, 'deposit_data-%i.json' % time.time())
+            with open(filefolder, 'w') as f:
+                json.dump(deposit_data, f, default=lambda x: x.hex())
+            if os.name == 'posix':
+                os.chmod(filefolder, int('440', 8))  # Read for owner & group
+            return filefolder
 
     def verify_keystores(self, keystore_filefolders: List[str], password: str) -> bool:
-        with click.progressbar(zip(self.credentials, keystore_filefolders),
-                               label=load_text(['msg_keystore_verification']),
-                               length=len(self.credentials), show_percent=False, show_pos=True) as items:
-            return all(credential.verify_keystore(keystore_filefolder=filefolder, password=password)
-                       for credential, filefolder in items)
+        credentials = self.credentials
+        keystore_filefolders = zip(credentials, keystore_filefolders)
+        with multiprocessing.Pool(5) as pool:
+            return all(pool.apply_async(
+                lambda credential, filefolder: credential.verify_keystore(keystore_filefolder=filefolder, password=password),
+                args=(credential, filefolder)) for credential, filefolder in keystore_filefolders)
 
     def export_bls_to_execution_change_json(self, folder: str, validator_indices: Sequence[int]) -> str:
-        with click.progressbar(self.credentials, label=load_text(['msg_bls_to_execution_change_creation']),
-                               show_percent=False, show_pos=True) as credentials:
-            bls_to_execution_changes = [cred.get_bls_to_execution_change_dict(validator_indices[i])
-                                        for i, cred in enumerate(credentials)]
+        with multiprocessing.Pool(5) as pool:
+            bls_to_execution_changes = pool.map(
+                lambda index: credential.get_bls_to_execution_change_dict(validator_indices[i]),
+                enumerate(self.credentials))
 
         filefolder = os.path.join(folder, 'bls_to_execution_change-%i.json' % time.time())
         with open(filefolder, 'w') as f:
@@ -268,3 +273,4 @@ class CredentialList:
         if os.name == 'posix':
             os.chmod(filefolder, int('440', 8))  # Read for owner & group
         return filefolder
+
