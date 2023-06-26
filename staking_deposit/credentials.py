@@ -228,9 +228,14 @@ class CredentialList:
             )
         key_indices = range(start_index, start_index + num_keys)
         with multiprocessing.Pool(5) as pool:
-            return cls([pool.apply_async(Credential, args=(mnemonic, mnemonic_password, index, amount, chain_setting,
+            credentials = [pool.apply_async(Credential, args=(mnemonic, mnemonic_password, index, amount, chain_setting,
                                                                  hex_eth1_withdrawal_address))
-                        for index, amount in zip(key_indices, amounts)])
+                        for index, amount in zip(key_indices, amounts)]
+
+        for credential in credentials:
+            credential.get()
+
+        return cls(credentials)
 
     def export_keystores(self, password: str, folder: str) -> List[str]:
         with multiprocessing.Pool(5) as pool:
