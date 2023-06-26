@@ -227,12 +227,10 @@ class CredentialList:
                 f"The number of keys ({num_keys}) doesn't equal to the corresponding deposit amounts ({len(amounts)})."
             )
         key_indices = range(start_index, start_index + num_keys)
-        with click.progressbar(key_indices, label=load_text(['msg_key_creation']),
-                               show_percent=False, show_pos=True) as indices:
-            with multiprocessing.Pool(5) as pool:
-                return cls([pool.apply_async(Credential, args=(mnemonic, mnemonic_password, index, amount, chain_setting,
+        with multiprocessing.Pool(5) as pool:
+            return cls([pool.apply_async(Credential, args=(mnemonic, mnemonic_password, index, amount, chain_setting,
                                                                  hex_eth1_withdrawal_address))
-                        for index, amount in zip(indices, amounts)])
+                        for index, amount in zip(key_indices, amounts)])
 
     def export_keystores(self, password: str, folder: str) -> List[str]:
         with multiprocessing.Pool(5) as pool:
